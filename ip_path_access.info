@@ -1,0 +1,12 @@
+name = IP Path Access
+description = Permits access to selected paths by IP.
+core = 7.x
+package = User Access
+configure = admin/config/people/ip_path_access/ip
+
+; Information added by Drupal.org packaging script on 2016-10-19
+version = "7.x-1.0-rc1+4-dev"
+core = "7.x"
+project = "ip_path_access"
+datestamp = "1476902340"
+

@@ -1,0 +1,287 @@
+<?php
+
+/**
+ * @file
+ * Main module for IP Path access.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function ip_path_access_menu() {
+  $items['admin/config/people/ip_path_access'] = array(
+    'title' => 'IP Path Access',
+    'description' => 'Add / Delete allowed IPs for set paths.',
+    'page callback' => 'ip_path_access',
+    'access arguments' => array('administer IP addresses by path'),
+    'file' => 'inc/ip_path_access_admin.inc',
+    'weight' => 20,
+  );
+  $items['admin/config/people/ip_path_access/delete/%'] = array(
+    'title' => 'Delete IP Path Access, Address and Path',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ip_path_access_delete', 5),
+    'access arguments' => array('administer IP addresses by path'),
+    'file' => 'inc/ip_path_access_admin.inc',
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function ip_path_access_permission() {
+  return array(
+    'administer IP addresses by path' => array(
+      'title' => t('administer IP addresses by path'),
+      'description' => t('Administer the IPs to only allow access by specific paths.'),
+    ),
+    'bypass IP address access by path rules' => array(
+      'title' => t('bypass IP address access by path rules'),
+      'description' => t('For this role, bypass the IP address access by path rules.'),
+    ),
+  );
+}
+
+
+/**
+ * Implements hook_init().
+ */
+function ip_path_access_init() {
+  // Get bool to see if we are allowed in or not.
+  $allowed = _ip_path_access_check();
+
+  // Implement a hook override for hook_ip_path_access().
+  drupal_alter('ip_path_access', $allowed);
+
+  if (!$allowed) {
+    watchdog('ip_path_access',
+      'An admin page request from IP @ip and @path was blocked.',
+      array('@ip' => ip_address(), '@path' => current_path())
+    );
+    drupal_access_denied();
+    module_invoke_all('exit');
+    drupal_exit();
+  }
+}
+
+
+/**
+ * Returns if page or node can be accessed due to IP by path rules.
+ *
+ * @return BOOL
+ *   Returns the boolean if a page is blocked by this module.
+ */
+function _ip_path_access_check() {
+
+  // Assume allowed until proven otherwise.
+  $allowed = TRUE;
+
+  // If the ip path access is enabled, then check into blocking conditions.
+  // User roles which are given access may bypass this completely.
+  if (
+    !user_access('bypass IP address access by path rules') &&
+    variable_get('ip_path_access_enabled', 0)
+    ) {
+
+    // Check if the current path matches any rule, return matching IPs.
+    $path_ip_matches = _ip_path_access_parseurl();
+
+    // If we found any matches, then this is a restricted path by IP.
+    // We may block this if the current IP does not match this path.
+    if (count($path_ip_matches) > 0) {
+      // If this page matches any blocked page, don't cache it.
+      drupal_page_is_cacheable(FALSE);
+      // Load the current IP.
+      $current_ip = ip_address();
+      // Determine if the current IP is allowed for the paths.
+      $allowed = _ip_path_access_ip_is_allowed($current_ip, $path_ip_matches);
+    }
+
+  }
+
+  return $allowed;
+}
+
+
+/**
+ * Performs a check of the current IP against the allowed IP(s) for paths.
+ *
+ * Will return FALSE if the current IP if not in the database.
+ *
+ * @param string $current_ip
+ *   The current IP address.
+ * @param mixed $path_ip_matches
+ *   The list of IPs that have matches on the path.
+ *
+ * @return bool
+ *   Returns true if access allowsed for this IP.
+ */
+function _ip_path_access_ip_is_allowed($current_ip, $path_ip_matches) {
+
+  $redirect_message = variable_get('ip_path_access_redirect_message', '');
+  // Special Option: Check for group access, allow if in group of a node.
+  if (module_exists('og')) {
+    $og_bypass_enabled = variable_get('ip_path_access_og_bypass_enabled', 0);
+    $node = menu_get_object();
+
+    // Make sure option is enabled and this is a node.
+    if ($og_bypass_enabled && is_object($node)) {
+      $wrapper = entity_metadata_wrapper('node', $node);
+
+      // If we have a group reference, check the value.
+      if (isset($wrapper->og_group_ref)) {
+        $group = array_pop($wrapper->og_group_ref->value());
+        // Group members are allowed all access their roles allow from any IP.
+        if (og_is_member('node', $group->nid)) {
+          return TRUE;
+        }
+      }
+    }
+  }
+
+  // Check for IP exact mactches or an IP stored in a range.
+  foreach ($path_ip_matches as $ip_match) {
+    $custom_redirect_path = isset($ip_match->custom_redirect) ? $ip_match->custom_redirect : '';
+    $path = isset($ip_match->path) ? $ip_match->path : '';
+    $ip_match = $ip_match->ip;
+
+    // Get Title of page
+    $original_path = drupal_get_normal_path($path);
+    $item = menu_get_item($original_path);
+    $page_title = $item['title'];
+
+    // If we have an IP range to check.
+    if (strpos($ip_match, '-') !== FALSE) {
+      // Check the range of IPs.
+      if (_ip_path_access_ip_in_range($current_ip, $ip_match)) {
+        return TRUE;
+      }
+    }
+    // If there are NOT any range characters in this IP address.
+    elseif ($current_ip == $ip_match) {
+      return TRUE;
+    }
+    // If redirect path is found display message to user and redirect him
+    if(!empty($custom_redirect_path) && !url_is_external($custom_redirect_path)){
+      if(isset($redirect_message)){
+        drupal_set_message(t(trim($redirect_message)), 'warning');
+        drupal_goto($custom_redirect_path);
+      }else{
+        drupal_goto($custom_redirect_path);
+      }
+    }
+  }
+
+  // We did not find a match, so return FALSE.
+  return FALSE;
+}
+
+
+/**
+ * Validate an IP Address or range to be valid.
+ *
+ * @return bool
+ *   Returns TRUE if the IP or IP range are valid IP(s).
+ */
+function _ip_path_access_validate_ip_range($ip) {
+  $valid = TRUE;
+  $ip_list = explode('-', $ip);
+  if (isset($ip_list[0])) {
+    $valid = !filter_var(trim($ip_list[0]), FILTER_VALIDATE_IP) === FALSE;
+  }
+  if (isset($ip_list[1])) {
+    $valid = !filter_var(trim($ip_list[1]), FILTER_VALIDATE_IP) === FALSE;
+  }
+  return $valid;
+}
+
+
+/**
+ * Check if an IP is in a range of IPs.
+ *
+ * @param string $ip
+ *   An IP to check if it is in a range.
+ * @param string $range
+ *   A range to check if it is in an IP.
+ *
+ * @return bool
+ *   Returns TRUE if the $ip parameter is included in the IP $range.
+ */
+function _ip_path_access_ip_in_range($ip, $range) {
+  // Split the two IPs.
+  list($ip_start, $ip_end) = explode('-', $range);
+  // Trim the variables.
+  $ip_start = trim($ip_start);
+  $ip_end = trim($ip_end);
+  // Check if the IP is in the range of IPs.
+  if (
+    (ip2long($ip) >= ip2long($ip_start)) &&
+    (ip2long($ip) <= ip2long($ip_end))
+  ) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+
+/**
+ * Parses the request path. Returns true if it's in the IP access list.
+ *
+ * @return bool
+ *   For the current path, returns a TRUE if located in the database.
+ */
+function _ip_path_access_parseurl() {
+  // Get the current path.
+  $path = drupal_get_normal_path(current_path());
+
+  // Load all IPs matching on path, and return list of IP or IP ranges.
+  // Note, because we allow ranges, we cannot match the currentIP to
+  // a range of IPs, example:
+  // current = 10.0.1.0
+  // stored IP range = 10.0.0.0 - 10.0.2.0 which cannot match.
+  // Because we cannot perform IP calculations in MySQL.
+  $allowed_ips_result = db_query(
+    "SELECT ip,path,custom_redirect FROM {ip_path_access} WHERE path = :path",
+    array(':path' => drupal_get_normal_path($path))
+    )->fetchAll();
+
+  // Code for checking the wildcard entries
+  $current_ip = ip_address();
+  $allowed_ips = array();
+  foreach ($allowed_ips_result as $key => $value) {
+    $allowed_ips[] = $value->ip;
+  }
+  if (!in_array($current_ip, $allowed_ips)) {
+    $path = explode("/", drupal_lookup_path('alias', $path));
+    $curr_path = '';
+    foreach($path as $key => $uri) {
+      $curr_path .= $uri . '/';
+      $allowed_ips_whitelist = db_query(
+        "SELECT ip,path,custom_redirect FROM {ip_path_access} WHERE path = :path",
+        array(':path' =>  $curr_path . '*')
+        )->fetchAll();
+
+      if (!empty($allowed_ips_whitelist)) {
+        $allowed_ips_result +=  $allowed_ips_whitelist;
+      }
+    }
+  }
+  return $allowed_ips_result;
+}
+
+/**
+ * Add custom_redirect field to ip_path_access table.
+ */
+function ip_path_access_update_7000() {
+  $spec = array(
+    'description' => 'Custom redirect path for access denied users',
+    'type' => 'varchar',
+    'length' => 255,
+    'not null' => TRUE,
+    'default' => '',
+  );
+
+  db_add_field( 'ip_path_access', 'custom_redirect', $spec);
+}

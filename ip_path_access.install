@@ -1,0 +1,66 @@
+<?php
+
+/**
+ * @file
+ * Install the ip_path_access schema.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ip_path_access_schema() {
+  $schema['ip_path_access'] = array(
+    'description' => 'List of allowed IP addresses by path(s).',
+    'fields' => array(
+      'iid' => array(
+        'description' => 'Primary Key: IP addresses ID (unique).',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'title' => array(
+        'description' => 'The descriptive title of the IP Path Access rule',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'ip' => array(
+        'description' => 'An IP address',
+        'type' => 'varchar',
+        'length' => 46,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'path' => array(
+        'description' => 'Path to allow by provided IP addresses',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'custom_redirect' => array(
+        'description' => 'Custom redirect path for access denied users',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+
+    ),
+    'indexes' => array(
+      'ip_path_access' => array('ip'),
+    ),
+    'primary key' => array('iid'),
+  );
+
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ip_path_access_uninstall() {
+  variable_del('ip_path_access_enabled');
+  variable_del('ip_path_access_og_bypass_enabled');
+}
